@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import './App.css'
+import { useGameSync } from './sync'
 
 const DEFAULT_WORDS = [
   'Hund', 'Katze', 'Tisch', 'Buch', 'Auto', 'Haus', 'Kind', 'Mann', 'Frau', 'Stadt',
@@ -13,7 +14,26 @@ const ARTICLES = {
   das: { label: 'DAS', color: '#16A34A', light: '#F0FDF4' },
 }
 
-function Avatar({ name, color }) {
+const INITIAL_STATE = {
+  view: 'game', // 'admin' | 'game'
+  scores: [0, 0],
+  currentWord: '',
+  adminWord: '',
+  customWords: '',
+  timerDuration: 30,
+  timerRunning: false,
+  timerEndsAt: 0,
+  candidateNames: ['Candidat 1', 'Candidat 2'],
+  highlight: null,
+  showAnswer: false,
+  correctArticle: '',
+  wordList: DEFAULT_WORDS,
+  usedWords: [],
+  feedbackMsg: '',
+  roundActive: false,
+}
+
+function Avatar({ color }) {
   return (
     <div className="avatar-wrap" style={{ '--avatar-color': color }}>
       <div className="avatar-ring">
@@ -44,42 +64,31 @@ function ScoreCard({ score, candidate, color, highlight }) {
 }
 
 export default function App() {
-  const [view, setView] = useState('game') // 'admin' | 'game'
-  const [scores, setScores] = useState([0, 0])
-  const [currentWord, setCurrentWord] = useState('')
-  const [adminWord, setAdminWord] = useState('')
-  const [customWords, setCustomWords] = useState('')
-  const [timer, setTimer] = useState(0)
-  const [timerDuration, setTimerDuration] = useState(30)
-  const [timerRunning, setTimerRunning] = useState(false)
-  const [candidateNames, setCandidateNames] = useState(['Candidat 1', 'Candidat 2'])
-  const [highlight, setHighlight] = useState(null)
-  const [showAnswer, setShowAnswer] = useState(false)
-  const [correctArticle, setCorrectArticle] = useState('')
-  const [wordList, setWordList] = useState(DEFAULT_WORDS)
-  const [usedWords, setUsedWords] = useState([])
-  const [feedbackMsg, setFeedbackMsg] = useState('')
-  const [roundActive, setRoundActive] = useState(false)
-  const timerRef = useRef(null)
+  const { state, update, connected } = useGameSync(INITIAL_STATE)
+  const {
+    view, scores, currentWord, adminWord, customWords, timerDuration,
+    timerRunning, timerEndsAt, candidateNames, highlight, showAnswer,
+    correctArticle, wordList, usedWords, feedbackMsg, roundActive,
+  } = state
 
-  // Timer logic
+  // Horloge locale pour l'affichage du compte à rebours (identique sur tous les appareils)
+  const [now, setNow] = useState(Date.now())
   useEffect(() => {
-    if (timerRunning && timer > 0) {
-      timerRef.current = setInterval(() => {
-        setTimer(t => {
-          if (t <= 1) {
-            setTimerRunning(false)
-            clearInterval(timerRef.current)
-            return 0
-          }
-          return t - 1
-        })
-      }, 1000)
-    } else {
-      clearInterval(timerRef.current)
+    const id = setInterval(() => setNow(Date.now()), 200)
+    return () => clearInterval(id)
+  }, [])
+
+  const timer = timerRunning ? Math.max(0, Math.ceil((timerEndsAt - now) / 1000)) : 0
+  const timerPercent = timerDuration > 0 ? (timer / timerDuration) * 100 : 0
+  const timerColor = timerPercent > 50 ? '#16A34A' : timerPercent > 25 ? '#D97706' : '#DC2626'
+
+  // Quand le timer atteint 0, on le fige et on l'arrête (état partagé)
+  useEffect(() => {
+    if (timerRunning && timer === 0 && timerEndsAt > 0 && Date.now() >= timerEndsAt) {
+      update({ timerRunning: false })
     }
-    return () => clearInterval(timerRef.current)
-  }, [timerRunning])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timer, timerRunning, timerEndsAt])
 
   const formatTime = (s) => {
     const m = Math.floor(s / 60).toString().padStart(2, '0')
@@ -89,99 +98,87 @@ export default function App() {
 
   const startRound = () => {
     if (!adminWord.trim()) {
-      setFeedbackMsg('⚠️ Veuillez saisir un mot !')
-      setTimeout(() => setFeedbackMsg(''), 2000)
+      update({ feedbackMsg: '⚠️ Veuillez saisir un mot !' })
+      setTimeout(() => update({ feedbackMsg: '' }), 2000)
       return
     }
-    setCurrentWord(adminWord.trim())
-    setShowAnswer(false)
-    setCorrectArticle('')
-    setHighlight(null)
-    setTimer(timerDuration)
-    setTimerRunning(true)
-    setRoundActive(true)
-    setFeedbackMsg('')
+    update({
+      currentWord: adminWord.trim(),
+      showAnswer: false,
+      correctArticle: '',
+      highlight: null,
+      timerRunning: true,
+      timerEndsAt: Date.now() + timerDuration * 1000,
+      roundActive: true,
+      feedbackMsg: '',
+    })
   }
 
   const stopTimer = () => {
-    setTimerRunning(false)
+    const remaining = Math.max(0, Math.ceil((timerEndsAt - Date.now()) / 1000))
+    update({ timerRunning: false, timerEndsAt: Date.now() + remaining * 1000 })
   }
 
   const resetRound = () => {
-    setTimerRunning(false)
-    setTimer(0)
-    setRoundActive(false)
-    setHighlight(null)
-    setShowAnswer(false)
-    setCorrectArticle('')
-    setAdminWord('')
-    setCurrentWord('')
-    setFeedbackMsg('')
+    update({
+      timerRunning: false,
+      timerEndsAt: 0,
+      roundActive: false,
+      highlight: null,
+      showAnswer: false,
+      correctArticle: '',
+      adminWord: '',
+      currentWord: '',
+      feedbackMsg: '',
+    })
   }
 
   const givePoint = (candidateIdx) => {
-    setScores(prev => {
-      const next = [...prev]
+    update(prev => {
+      const next = [...prev.scores]
       next[candidateIdx] += 1
-      return next
+      return { scores: next, highlight: candidateIdx }
     })
-    setHighlight(candidateIdx)
-    setFeedbackMsg(`✅ Point attribué à ${candidateNames[candidateIdx]} !`)
-    setTimeout(() => {
-      setHighlight(null)
-      setFeedbackMsg('')
-    }, 1500)
+    setTimeout(() => update({ highlight: null }), 1500)
   }
 
   const removePoint = (candidateIdx) => {
-    setScores(prev => {
-      const next = [...prev]
+    update(prev => {
+      const next = [...prev.scores]
       next[candidateIdx] = Math.max(0, next[candidateIdx] - 1)
-      return next
+      return { scores: next }
     })
   }
 
   const resetScores = () => {
-    setScores([0, 0])
-    setHighlight(null)
-  }
-
-  const revealAnswer = () => {
-    setShowAnswer(!showAnswer)
+    update({ scores: [0, 0], highlight: null })
   }
 
   // Tire un mot non encore utilisé ET lance le round immédiatement
   const nextWord = () => {
-    clearInterval(timerRef.current)
     const available = wordList.filter(w => !usedWords.includes(w))
     let w
     if (available.length === 0) {
       // Tous les mots ont été utilisés → on repart sur la liste complète
       const fresh = [...wordList]
       w = fresh[Math.floor(Math.random() * fresh.length)]
-      setUsedWords([w])
-      setFeedbackMsg('🔄 Tous les mots utilisés — liste réinitialisée !')
-      setTimeout(() => setFeedbackMsg(''), 2500)
+      update({ usedWords: [w], feedbackMsg: '🔄 Tous les mots utilisés — liste réinitialisée !' })
+      setTimeout(() => update({ feedbackMsg: '' }), 2500)
     } else {
       w = available[Math.floor(Math.random() * available.length)]
-      setUsedWords(prev => [...prev, w])
+      update(prev => ({ usedWords: [...prev.usedWords, w] }))
     }
-    // Lancer le round avec ce mot
-    setAdminWord(w)
-    setCurrentWord(w)
-    setShowAnswer(false)
-    setCorrectArticle('')
-    setHighlight(null)
-    setTimer(timerDuration)
-    setTimerRunning(true)
-    setRoundActive(true)
+    update({
+      adminWord: w,
+      currentWord: w,
+      showAnswer: false,
+      correctArticle: '',
+      highlight: null,
+      timerRunning: true,
+      timerEndsAt: Date.now() + timerDuration * 1000,
+      roundActive: true,
+    })
   }
-
-  // Saisie manuelle + bouton Lancer
-  const drawRandomWord = () => nextWord()
-
-  const timerPercent = timerDuration > 0 ? (timer / timerDuration) * 100 : 0
-  const timerColor = timerPercent > 50 ? '#16A34A' : timerPercent > 25 ? '#D97706' : '#DC2626'
 
   return (
     <div className="app-layout">
@@ -193,18 +190,22 @@ export default function App() {
             <div className="sidebar-title">ADMIN</div>
             <div className="sidebar-subtitle">GAME 1</div>
           </div>
+          <span
+            className={`sync-dot ${connected ? 'online' : ''}`}
+            title={connected ? 'Connecté — tous les appareils synchronisés' : 'Hors ligne — aucun appareil connecté'}
+          />
         </div>
 
         <nav className="sidebar-nav">
           <button
             className={`nav-btn ${view === 'game' ? 'active' : ''}`}
-            onClick={() => setView('game')}
+            onClick={() => update({ view: 'game' })}
           >
             <span>🎮</span> Jeu
           </button>
           <button
             className={`nav-btn ${view === 'admin' ? 'active' : ''}`}
-            onClick={() => setView('admin')}
+            onClick={() => update({ view: 'admin' })}
           >
             <span>⚙️</span> Admin
           </button>
@@ -245,8 +246,7 @@ export default function App() {
                 className={`article-reveal-btn ${correctArticle === key ? 'selected' : ''}`}
                 style={{ '--art-color': val.color, '--art-light': val.light }}
                 onClick={() => {
-                  setCorrectArticle(key)
-                  setShowAnswer(true)
+                  update({ correctArticle: key, showAnswer: true })
                 }}
               >
                 {val.label}
@@ -277,7 +277,6 @@ export default function App() {
             candidateNames={candidateNames}
             currentWord={currentWord}
             timer={timer}
-            timerDuration={timerDuration}
             timerRunning={timerRunning}
             timerPercent={timerPercent}
             timerColor={timerColor}
@@ -285,7 +284,7 @@ export default function App() {
             showAnswer={showAnswer}
             correctArticle={correctArticle}
             adminWord={adminWord}
-            setAdminWord={setAdminWord}
+            setAdminWord={v => update({ adminWord: v })}
             startRound={startRound}
             stopTimer={stopTimer}
             resetRound={resetRound}
@@ -297,14 +296,15 @@ export default function App() {
         ) : (
           <AdminView
             candidateNames={candidateNames}
-            setCandidateNames={setCandidateNames}
+            setCandidateNames={v => update(prev => ({ candidateNames: v }))}
             timerDuration={timerDuration}
-            setTimerDuration={setTimerDuration}
+            setTimerDuration={v => update({ timerDuration: v })}
             customWords={customWords}
-            setCustomWords={setCustomWords}
+            setCustomWords={v => update({ customWords: v })}
             wordList={wordList}
-            setWordList={setWordList}
-            setUsedWords={setUsedWords}
+            setWordList={v => update(prev => ({ wordList: v, usedWords: [] }))}
+            setUsedWords={v => update(prev => ({ usedWords: v }))}
+            connected={connected}
           />
         )}
       </main>
@@ -314,7 +314,7 @@ export default function App() {
 
 // ─── GAME VIEW ───
 function GameView({
-  scores, candidateNames, currentWord, timer, timerDuration, timerRunning,
+  scores, candidateNames, currentWord, timer, timerRunning,
   timerPercent, timerColor, highlight, showAnswer, correctArticle,
   adminWord, setAdminWord, startRound, stopTimer, resetRound,
   nextWord, feedbackMsg, formatTime, roundActive
@@ -421,7 +421,7 @@ function GameView({
 // ─── ADMIN VIEW ───
 function AdminView({
   candidateNames, setCandidateNames, timerDuration, setTimerDuration,
-  customWords, setCustomWords, wordList, setWordList, setUsedWords
+  customWords, setCustomWords, wordList, setWordList, setUsedWords, connected
 }) {
   const [saved, setSaved] = useState(false)
 
@@ -448,7 +448,7 @@ function AdminView({
             <input
               type="text"
               value={candidateNames[0]}
-              onChange={e => setCandidateNames(p => [e.target.value, p[1]])}
+              onChange={e => setCandidateNames([e.target.value, candidateNames[1]])}
               placeholder="Candidat 1"
             />
           </div>
@@ -457,7 +457,7 @@ function AdminView({
             <input
               type="text"
               value={candidateNames[1]}
-              onChange={e => setCandidateNames(p => [p[0], e.target.value])}
+              onChange={e => setCandidateNames([candidateNames[0], e.target.value])}
               placeholder="Candidat 2"
             />
           </div>
@@ -537,6 +537,12 @@ function AdminView({
               <span className="step-num">4</span>
               <p>Révélez la bonne réponse depuis la sidebar, puis attribuez le point avec <strong>+</strong></p>
             </div>
+          </div>
+          <div className="sync-status">
+            <span className={`sync-dot ${connected ? 'online' : ''}`} />
+            {connected
+              ? 'Tous les appareils sont synchronisés en temps réel'
+              : 'Hors ligne — ouvrez le site sur un autre appareil du réseau'}
           </div>
         </div>
       </div>
