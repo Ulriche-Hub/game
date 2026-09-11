@@ -64,7 +64,7 @@ function ScoreCard({ score, candidate, color, highlight }) {
 }
 
 export default function App() {
-  const { state, update, connected } = useGameSync(INITIAL_STATE)
+  const { state, update, connected, syncInfo } = useGameSync(INITIAL_STATE)
   const {
     view, scores, currentWord, adminWord, customWords, timerDuration,
     timerRunning, timerEndsAt, candidateNames, highlight, showAnswer,
@@ -192,8 +192,13 @@ export default function App() {
           </div>
           <span
             className={`sync-dot ${connected ? 'online' : ''}`}
-            title={connected ? 'Connecté — tous les appareils synchronisés' : 'Hors ligne — aucun appareil connecté'}
+            title={connected ? 'Connecté — tous les appareils synchronisés' : `Hors ligne — ${syncInfo}`}
           />
+          {!connected && syncInfo && (
+            <div style={{ fontSize: '9px', color: '#f87171', marginTop: '4px', fontFamily: 'JetBrains Mono', wordBreak: 'break-all' }}>
+              {syncInfo}
+            </div>
+          )}
         </div>
 
         <nav className="sidebar-nav">
